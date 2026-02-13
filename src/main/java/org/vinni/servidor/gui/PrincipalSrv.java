@@ -19,7 +19,7 @@ public class PrincipalSrv extends javax.swing.JFrame {
     private Socket clientSocket;
     private BufferedReader in;
     private PrintWriter out;
-
+    private static java.util.List<PrintWriter> clientes = new java.util.ArrayList<>();
     /**
      * Creates new form Principal1
      */
@@ -84,30 +84,43 @@ public class PrincipalSrv extends javax.swing.JFrame {
     }
 
     private void iniciarServidor() {
-        JOptionPane.showMessageDialog(this, "Iniciando servidor");
-        new Thread(new Runnable() {
-            public void run() {
-                try {
-                    InetAddress addr = InetAddress.getLocalHost();
-                    serverSocket = new ServerSocket( PORT);
-                    mensajesTxt.append("Servidor TCP en ejecución: "+ addr + " ,Puerto " + serverSocket.getLocalPort()+ "\n");
-                    while (true) {
-                        clientSocket = serverSocket.accept();
-                        in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                        String linea;
-                        out = new PrintWriter(clientSocket.getOutputStream(), true);
-                        while ((linea = in.readLine()) != null) {
-                            mensajesTxt.append("Cliente: " + linea + "\n");
-                            out.println("Mensaje recibido en el server " );
-                        }
+        new Thread(() -> {
+            try {
+                serverSocket = new ServerSocket(PORT);
+                while (true) {
+                    Socket clienteSocket = serverSocket.accept();
+                    PrintWriter writer = new PrintWriter(clienteSocket.getOutputStream(), true);
+                    clientes.add(writer); // Agregamos el cliente a la lista
 
-                    }
-                } catch (IOException ex) {
-                    ex.printStackTrace();
-                    mensajesTxt.append("Error en el servidor: " + ex.getMessage() + "\n");
+                    // Hilo individual para escuchar a este cliente específico
+                    new Thread(new ManejadorCliente(clienteSocket, writer)).start();
                 }
-            }
+            } catch (IOException e) { e.printStackTrace(); }
         }).start();
+    }
+
+    // Clase interna para manejar cada cliente por separado
+    private class ManejadorCliente implements Runnable {
+        private Socket socket;
+        private PrintWriter miWriter;
+
+        public ManejadorCliente(Socket s, PrintWriter w) { this.socket = s; this.miWriter = w; }
+
+        public void run() {
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+                String msg;
+                while ((msg = in.readLine()) != null) {
+                    mensajesTxt.append("Cliente dice: " + msg + "\n");
+                    difundirMensaje(msg); // Replicar a todos
+                }
+            } catch (IOException e) { /* Manejar desconexión */ }
+        }
+    }
+
+    private void difundirMensaje(String msg) {
+        for (PrintWriter out : clientes) {
+            out.println(msg); // Se envía a cada cliente en la lista
+        }
     }
 
     // Variables declaration - do not modify
