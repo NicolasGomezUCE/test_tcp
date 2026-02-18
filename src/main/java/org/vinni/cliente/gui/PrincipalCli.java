@@ -3,6 +3,7 @@ package org.vinni.cliente.gui;
 import javax.swing.*;
 import java.io.*;
 import java.net.*;
+import java.util.Base64;
 
 public class PrincipalCli extends javax.swing.JFrame {
     private final int PORT = 12345;
@@ -16,30 +17,43 @@ public class PrincipalCli extends javax.swing.JFrame {
     }
 
     private void initComponents() {
-        this.setTitle("Cliente Chat");
+        this.setTitle("Cliente Multimedia");
         bConectar = new JButton("Conectar");
         btEnviar = new JButton("Enviar");
+        btAdjuntar = new JButton("Adjuntar (1KB)");
         mensajeTxt = new JTextField();
         mensajesTxt = new JTextArea();
         listaUsuariosUI = new JList<>(modeloLista);
-        JScrollPane scMensajes = new JScrollPane(mensajesTxt);
-        JScrollPane scLista = new JScrollPane(listaUsuariosUI);
+
+        JScrollPane scMsg = new JScrollPane(mensajesTxt);
+        JScrollPane scLis = new JScrollPane(listaUsuariosUI);
 
         setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
         getContentPane().setLayout(null);
 
+        bConectar.setBounds(20, 10, 100, 30);
         bConectar.addActionListener(e -> conectar());
-        getContentPane().add(bConectar); bConectar.setBounds(20, 10, 100, 30);
+        getContentPane().add(bConectar);
 
-        getContentPane().add(scMensajes); scMensajes.setBounds(20, 50, 300, 150);
-        getContentPane().add(scLista); scLista.setBounds(330, 50, 100, 150);
+        scMsg.setBounds(20, 50, 300, 150);
+        getContentPane().add(scMsg);
 
-        getContentPane().add(mensajeTxt); mensajeTxt.setBounds(20, 210, 300, 30);
+        scLis.setBounds(330, 50, 100, 150);
+        getContentPane().add(scLis);
+
+        mensajeTxt.setBounds(20, 210, 200, 30);
+        getContentPane().add(mensajeTxt);
+
+        btEnviar.setBounds(230, 210, 85, 30);
         btEnviar.addActionListener(e -> enviarMensaje());
-        getContentPane().add(btEnviar); btEnviar.setBounds(330, 210, 100, 30);
+        getContentPane().add(btEnviar);
+
+        btAdjuntar.setBounds(325, 210, 115, 30);
+        btAdjuntar.addActionListener(e -> adjuntarArchivo());
+        getContentPane().add(btAdjuntar);
 
         modeloLista.addElement("Todos");
-        setSize(460, 300);
+        setSize(470, 310);
         setLocationRelativeTo(null);
     }
 
@@ -48,7 +62,7 @@ public class PrincipalCli extends javax.swing.JFrame {
         try {
             socket = new Socket("localhost", PORT);
             out = new PrintWriter(socket.getOutputStream(), true);
-            out.println(nombreUsuario); // Registro
+            out.println(nombreUsuario);
 
             new Thread(() -> {
                 try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
@@ -56,13 +70,15 @@ public class PrincipalCli extends javax.swing.JFrame {
                     while ((s = in.readLine()) != null) {
                         if (s.startsWith("LISTA:")) {
                             actualizarLista(s.substring(6));
+                        } else if (s.startsWith("FILE:")) {
+                            preguntarParaGuardar(s);
                         } else {
                             mensajesTxt.append(s + "\n");
                         }
                     }
                 } catch (IOException e) { }
             }).start();
-        } catch (IOException e) { e.printStackTrace(); }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void actualizarLista(String datos) {
@@ -76,22 +92,62 @@ public class PrincipalCli extends javax.swing.JFrame {
     }
 
     private void enviarMensaje() {
-        String destino = listaUsuariosUI.getSelectedValue();
-        String msg = mensajeTxt.getText();
-        if (destino == null || destino.equals("Todos")) {
-            out.println(msg);
-        } else {
-            out.println("@" + destino + " " + msg);
-            mensajesTxt.append("[Privado para " + destino + "]: " + msg + "\n");
+        String dest = listaUsuariosUI.getSelectedValue();
+        String m = mensajeTxt.getText();
+        if (dest == null || dest.equals("Todos")) out.println(m);
+        else {
+            out.println("@" + dest + " " + m);
+            mensajesTxt.append("[Para " + dest + "]: " + m + "\n");
         }
         mensajeTxt.setText("");
     }
 
-    public static void main(String args[]) {
-        java.awt.EventQueue.invokeLater(() -> new PrincipalCli().setVisible(true));
+    private void adjuntarArchivo() {
+        JFileChooser fc = new JFileChooser();
+        if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File f = fc.getSelectedFile();
+            if (f.length() > 1024) {
+                JOptionPane.showMessageDialog(this, "El archivo debe ser menor a 1 KB");
+                return;
+            }
+            try {
+                byte[] b = java.nio.file.Files.readAllBytes(f.toPath());
+                String b64 = Base64.getEncoder().encodeToString(b);
+                String dest = listaUsuariosUI.getSelectedValue();
+                String cmd = "FILE:" + f.getName() + ":" + b64;
+
+                if (dest == null || dest.equals("Todos")) out.println(cmd);
+                else out.println("@" + dest + " " + cmd);
+
+                mensajesTxt.append("Archivo enviado: " + f.getName() + "\n");
+            } catch (IOException e) { e.printStackTrace(); }
+        }
     }
 
-    private JButton bConectar, btEnviar;
+    private void preguntarParaGuardar(String raw) {
+        String[] p = raw.split(":");
+        String nombreOriginal = p[1];
+        String base64Data = p[2];
+
+        int op = JOptionPane.showConfirmDialog(this, "¿Deseas guardar el archivo: " + nombreOriginal + "?", "Archivo Recibido", JOptionPane.YES_NO_OPTION);
+
+        if (op == JOptionPane.YES_OPTION) {
+            JFileChooser saveFc = new JFileChooser();
+            saveFc.setSelectedFile(new File(nombreOriginal));
+            if (saveFc.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+                try (FileOutputStream fos = new FileOutputStream(saveFc.getSelectedFile())) {
+                    byte[] data = Base64.getDecoder().decode(base64Data);
+                    fos.write(data);
+                    mensajesTxt.append(">> Archivo guardado: " + saveFc.getSelectedFile().getName() + "\n");
+                } catch (IOException e) { e.printStackTrace(); }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        java.awt.EventQueue.invokeLater(() -> new PrincipalCli().setVisible(true));
+    }
+    private JButton bConectar, btEnviar, btAdjuntar;
     private JTextField mensajeTxt;
     private JTextArea mensajesTxt;
     private JList<String> listaUsuariosUI;

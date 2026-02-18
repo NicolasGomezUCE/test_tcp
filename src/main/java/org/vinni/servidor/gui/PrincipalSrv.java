@@ -15,27 +15,22 @@ public class PrincipalSrv extends javax.swing.JFrame {
     }
 
     private void initComponents() {
-        this.setTitle("Servidor con Selección de Destinatario");
-        bIniciar = new javax.swing.JButton();
-        jLabel1 = new javax.swing.JLabel();
+        this.setTitle("Servidor Chat & Archivos");
+        bIniciar = new JButton("INICIAR SERVIDOR");
         mensajesTxt = new JTextArea();
-        jScrollPane1 = new javax.swing.JScrollPane();
+        JScrollPane scroll = new JScrollPane(mensajesTxt);
 
-        setDefaultCloseOperation(javax.swing.WindowConstants.EXIT_ON_CLOSE);
+        setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
         getContentPane().setLayout(null);
 
-        bIniciar.setText("INICIAR SERVIDOR");
-        bIniciar.addActionListener(evt -> iniciarServidor());
+        bIniciar.setBounds(100, 30, 250, 40);
+        bIniciar.addActionListener(e -> iniciarServidor());
         getContentPane().add(bIniciar);
-        bIniciar.setBounds(100, 50, 250, 40);
 
-        mensajesTxt.setColumns(25);
-        mensajesTxt.setRows(5);
-        jScrollPane1.setViewportView(mensajesTxt);
-        getContentPane().add(jScrollPane1);
-        jScrollPane1.setBounds(20, 110, 410, 120);
+        scroll.setBounds(20, 90, 410, 150);
+        getContentPane().add(scroll);
 
-        setSize(480, 300);
+        setSize(470, 300);
         setLocationRelativeTo(null);
     }
 
@@ -45,21 +40,21 @@ public class PrincipalSrv extends javax.swing.JFrame {
                 serverSocket = new ServerSocket(PORT);
                 mensajesTxt.append("Servidor iniciado en puerto " + PORT + "\n");
                 while (true) {
-                    Socket clientSocket = serverSocket.accept();
-                    new Thread(new ManejadorCliente(clientSocket)).start();
+                    Socket s = serverSocket.accept();
+                    new Thread(new ManejadorCliente(s)).start();
                 }
-            } catch (IOException ex) { ex.printStackTrace(); }
+            } catch (IOException e) { e.printStackTrace(); }
         }).start();
     }
 
-    private void difundirListaUsuarios() {
+    private void difundirLista() {
         StringBuilder sb = new StringBuilder("LISTA:");
         synchronized (mapaClientes) {
-            for (String nombre : mapaClientes.keySet()) sb.append(nombre).append(",");
+            mapaClientes.keySet().forEach(n -> sb.append(n).append(","));
         }
         String lista = sb.toString();
         synchronized (mapaClientes) {
-            for (PrintWriter p : mapaClientes.values()) p.println(lista);
+            mapaClientes.values().forEach(p -> p.println(lista));
         }
     }
 
@@ -75,7 +70,7 @@ public class PrincipalSrv extends javax.swing.JFrame {
                 this.nombre = in.readLine();
 
                 synchronized (mapaClientes) { mapaClientes.put(nombre, out); }
-                difundirListaUsuarios();
+                difundirLista();
 
                 String linea;
                 while ((linea = in.readLine()) != null) {
@@ -85,37 +80,35 @@ public class PrincipalSrv extends javax.swing.JFrame {
                         difundirMensaje(nombre, linea);
                     }
                 }
-            } catch (IOException e) { } finally {
+            } catch (IOException e) {
+            } finally {
                 synchronized (mapaClientes) { mapaClientes.remove(nombre); }
-                difundirListaUsuarios();
+                difundirLista();
             }
         }
 
         private void enviarPrivado(String msg) {
             int espacio = msg.indexOf(" ");
             if (espacio != -1) {
-                String destino = msg.substring(1, espacio);
+                String dest = msg.substring(1, espacio);
                 String contenido = msg.substring(espacio + 1);
-                PrintWriter pw = mapaClientes.get(destino);
-                if (pw != null) pw.println("[Privado de " + nombre + "]: " + contenido);
+                PrintWriter pw = mapaClientes.get(dest);
+                if (pw != null) pw.println(contenido.startsWith("FILE:") ? contenido : "[Privado de " + nombre + "]: " + contenido);
+            }
+        }
+
+        private void difundirMensaje(String emisor, String msg) {
+            String f = msg.startsWith("FILE:") ? msg : emisor + ": " + msg;
+            if (!msg.startsWith("FILE:")) mensajesTxt.append(emisor + ": " + msg + "\n");
+            synchronized (mapaClientes) {
+                mapaClientes.values().forEach(p -> p.println(f));
             }
         }
     }
 
-    private void difundirMensaje(String emisor, String m) {
-        String f = emisor + ": " + m;
-        mensajesTxt.append(f + "\n");
-        synchronized (mapaClientes) {
-            for (PrintWriter p : mapaClientes.values()) p.println(f);
-        }
-    }
-
-    public static void main(String args[]) {
+    public static void main(String[] args) {
         java.awt.EventQueue.invokeLater(() -> new PrincipalSrv().setVisible(true));
     }
-
-    private javax.swing.JButton bIniciar;
-    private javax.swing.JLabel jLabel1;
-    private javax.swing.JTextArea mensajesTxt;
-    private javax.swing.JScrollPane jScrollPane1;
+    private JButton bIniciar;
+    private JTextArea mensajesTxt;
 }
