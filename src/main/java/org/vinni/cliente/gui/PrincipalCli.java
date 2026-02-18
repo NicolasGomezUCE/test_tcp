@@ -16,7 +16,7 @@ public class PrincipalCli extends javax.swing.JFrame {
     private Socket socket;
     private PrintWriter out;
     private BufferedReader in;
-
+    private String nombreUsuario;
 
 
     /**
@@ -127,6 +127,8 @@ public class PrincipalCli extends javax.swing.JFrame {
     // End of variables declaration
 
     private void conectar() {
+        nombreUsuario = JOptionPane.showInputDialog(this, "Ingresa tu nombre de usuario:");
+        if (nombreUsuario == null || nombreUsuario.isEmpty()) nombreUsuario = "Anónimo";
         JOptionPane.showMessageDialog(this, "Conectando con servidor");
         try {
             if (socket == null || socket.isClosed()) {
@@ -146,10 +148,14 @@ public class PrincipalCli extends javax.swing.JFrame {
                     }
                 }
             }).start();
+            out = new PrintWriter(socket.getOutputStream(), true);
+            out.println(nombreUsuario);
             System.out.println(out);
+
         }catch (IOException e){
             
         }
+
     }
     private void enviarMensaje() {
         out.println(mensajeTxt.getText());
