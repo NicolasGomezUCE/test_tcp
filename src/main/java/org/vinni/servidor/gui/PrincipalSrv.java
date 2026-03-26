@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class PrincipalSrv extends JFrame {
     private int miPuerto;
-    // Uso de camelCase para consistencia con estándares del proyecto
     private final Map<String, PrintWriter> clientesLocales = new ConcurrentHashMap<>();
     private JTextArea logArea = new JTextArea();
     private JButton btnIniciar = new JButton("Encender Servidor");
@@ -18,11 +17,9 @@ public class PrincipalSrv extends JFrame {
     public PrincipalSrv() {
         setTitle("Nodo Servidor - Java Spring Style");
         btnIniciar.addActionListener(e -> encenderServidor());
-
         setLayout(new BorderLayout());
         add(btnIniciar, BorderLayout.NORTH);
         add(new JScrollPane(logArea), BorderLayout.CENTER);
-
         setSize(400, 350);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
     }
@@ -30,7 +27,6 @@ public class PrincipalSrv extends JFrame {
     private void encenderServidor() {
         btnIniciar.setEnabled(false);
         autoConfigurar();
-        // Iniciamos el proceso de registro en un hilo separado para no bloquear la UI
         new Thread(() -> intentarRegistro(1)).start();
     }
 
@@ -56,40 +52,30 @@ public class PrincipalSrv extends JFrame {
     }
 
     private void intentarRegistro(int intento) {
-        // Si ya logramos el registro, detenemos la recursividad
         if (registrado) return;
-
         if (intento > 3) {
             log("[!] Balanceador no detectado tras 3 intentos. Reintentando en 10s...");
             reprogramarRegistro(1, 10000);
             return;
         }
-
         try (Socket s = new Socket("localhost", 12345);
              PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
-
             out.println("REGISTRO_SRV");
             out.println(miPuerto);
-
             log("[INFO] Registro exitoso en puerto " + miPuerto);
             registrado = true;
-
-            // Hilo de monitoreo: Si el balanceador muere, debemos saberlo para re-registrarnos
             new Thread(() -> {
                 while (registrado) {
                     try {
-                        Thread.sleep(15000); // Verificación cada 15 segundos
-                        try (Socket test = new Socket("localhost", 12345)) {
-                            // LB está vivo
-                        }
+                        Thread.sleep(15000);
+                        try (Socket test = new Socket("localhost", 12345)) { }
                     } catch (Exception e) {
-                        log("[ALERTA] Conexión con Balanceador perdida. Intentando recuperar registro...");
+                        log("[ALERTA] Conexión con Balanceador perdida. Recuperando registro...");
                         registrado = false;
                         intentarRegistro(1);
                     }
                 }
             }).start();
-
         } catch (Exception e) {
             log("[ALERTA] Balanceador fuera de línea. Intento " + intento + "/3...");
             reprogramarRegistro(intento + 1, 3000);
@@ -103,17 +89,29 @@ public class PrincipalSrv extends JFrame {
     }
 
     private void sincronizarUsuariosGlobales() {
+        // Llamar siempre dentro de synchronized(clientesLocales)
         String trama = "LISTA:" + String.join(",", clientesLocales.keySet());
         clientesLocales.values().forEach(p -> p.println(trama));
     }
 
     private class Manejador implements Runnable {
-        private Socket s;
+        private final Socket s;
         public Manejador(Socket s) { this.s = s; }
 
         public void run() {
             String nombre = null;
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()))) {
+            PrintWriter out = null;
+
+            try {
+                // ── IMPORTANTE: el LB ya envió el nombre por el stream antes
+                // de iniciar el bridge. Aquí leemos con BufferedReader sobre el
+                // InputStream del socket, que recibe exactamente lo que el LB
+                // escribió con println(nombre). El bridge empieza DESPUÉS de que
+                // el LB llamó srvOut.println(nombre), así que no hay carreras
+                // entre el nombre y el payload del cliente. ──
+                BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
+                out = new PrintWriter(s.getOutputStream(), true);
+
                 nombre = in.readLine();
                 if (nombre == null) return;
 
@@ -122,9 +120,11 @@ public class PrincipalSrv extends JFrame {
                     return;
                 }
 
-                PrintWriter out = new PrintWriter(s.getOutputStream(), true);
-                clientesLocales.put(nombre, out);
-                sincronizarUsuariosGlobales();
+                // Registro atómico: put + sincronizar en un solo bloque crítico
+                synchronized (clientesLocales) {
+                    clientesLocales.put(nombre, out);
+                    sincronizarUsuariosGlobales();
+                }
                 log("[SISTEMA] Cliente conectado: " + nombre);
 
                 String line;
@@ -132,11 +132,19 @@ public class PrincipalSrv extends JFrame {
                     if (line.startsWith("@")) enviarPrivado(nombre, line);
                     else broadcast(nombre + ": " + line, true);
                 }
+
             } catch (Exception e) {
                 log("[SISTEMA] Desconexión: " + (nombre != null ? nombre : "Desconocido"));
             } finally {
-                if (nombre != null) clientesLocales.remove(nombre);
-                sincronizarUsuariosGlobales();
+                // Desregistro atómico + liberar recursos
+                if (nombre != null) {
+                    synchronized (clientesLocales) {
+                        clientesLocales.remove(nombre);
+                        sincronizarUsuariosGlobales();
+                    }
+                }
+                if (out != null) out.close();
+                try { s.close(); } catch (IOException ignored) {}
             }
         }
     }
@@ -146,12 +154,10 @@ public class PrincipalSrv extends JFrame {
             int esp = trama.indexOf(" ");
             if (esp == -1) return;
             String para = trama.substring(1, esp);
-            String msg = trama.substring(esp + 1);
-
+            String msg  = trama.substring(esp + 1);
             if (clientesLocales.containsKey(para)) {
                 clientesLocales.get(para).println("[P] " + de + ": " + msg);
             } else {
-                // Si no es local, lo mandamos a la malla a través del balanceador
                 enviarAMesh("INTERNAL:PV#" + de + "#" + para + "#" + msg);
             }
         } catch (Exception e) {
@@ -160,7 +166,7 @@ public class PrincipalSrv extends JFrame {
     }
 
     private void broadcast(String m, boolean replica) {
-        logArea.append(m + "\n");
+        SwingUtilities.invokeLater(() -> logArea.append(m + "\n"));
         clientesLocales.values().forEach(p -> p.println(m));
         if (replica) enviarAMesh("INTERNAL:BC#" + m);
     }
@@ -169,17 +175,14 @@ public class PrincipalSrv extends JFrame {
         try (Socket s = new Socket("localhost", 12345);
              BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()));
              PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
-
             out.println("GET_NODOS");
             String respuesta = in.readLine();
             if (respuesta == null) return;
-
             String lista = respuesta.replace("[", "").replace("]", "").replace(" ", "");
             for (String pStr : lista.split(",")) {
                 if (pStr.isEmpty()) continue;
                 int p = Integer.parseInt(pStr);
                 if (p == miPuerto) continue;
-
                 try (Socket s2 = new Socket("localhost", p);
                      PrintWriter out2 = new PrintWriter(s2.getOutputStream(), true)) {
                     out2.println(trama);
@@ -199,6 +202,6 @@ public class PrincipalSrv extends JFrame {
     private void log(String m) { SwingUtilities.invokeLater(() -> logArea.append(m + "\n")); }
 
     public static void main(String[] args) {
-        new PrincipalSrv().setVisible(true);
+        SwingUtilities.invokeLater(() -> new PrincipalSrv().setVisible(true));
     }
 }

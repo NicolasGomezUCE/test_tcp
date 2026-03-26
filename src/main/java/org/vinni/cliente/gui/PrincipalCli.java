@@ -15,84 +15,181 @@ public class PrincipalCli extends JFrame {
     private JButton btnCon = new JButton("Conectar");
     private String nombre;
 
+    // ── Control de reconexión ──────────────────────────────────────────────────
+    private volatile boolean reconectandose = false;
+    private volatile int intentosReconexion = 0;
+    private static final int MAX_RECONEXIONES = 3;
+
     public PrincipalCli() {
         setTitle("Cliente Resiliente");
-        btnCon.addActionListener(e -> conectar(1));
+        btnCon.addActionListener(e -> iniciarConexionManual());
         campo.addActionListener(e -> enviar());
+
         setLayout(new BorderLayout());
         add(btnCon, BorderLayout.NORTH);
         add(new JScrollPane(listaUI), BorderLayout.WEST);
         add(new JScrollPane(area), BorderLayout.CENTER);
         add(campo, BorderLayout.SOUTH);
+
         setSize(500, 400);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
     }
 
-    private void conectar(int intento) {
-        if (nombre == null) nombre = JOptionPane.showInputDialog("Nombre:");
-        if (nombre == null || intento > 3) {
-            btnCon.setEnabled(true);
+    // ── Entrada manual (botón) ─────────────────────────────────────────────────
+
+    private void iniciarConexionManual() {
+        intentosReconexion = 0;
+        reconectandose = false;
+        btnCon.setEnabled(false);
+        conectar();
+    }
+
+    // ── Conexión ───────────────────────────────────────────────────────────────
+
+    private void conectar() {
+        if (nombre == null) {
+            nombre = JOptionPane.showInputDialog(this, "Nombre:");
+        }
+        if (nombre == null || nombre.isBlank()) {
+            nombre = null;
+            SwingUtilities.invokeLater(() -> btnCon.setEnabled(true));
             return;
         }
 
-        try {
-            btnCon.setEnabled(false);
-            if (socket != null) socket.close();
+        new Thread(() -> {
+            try {
+                if (socket != null && !socket.isClosed()) {
+                    try { socket.close(); } catch (IOException ignored) {}
+                }
 
-            socket = new Socket("localhost", 12345);
-            // IMPORTANTE: Definir timeout o autoFlush
-            out = new PrintWriter(socket.getOutputStream(), true);
-            out.println(nombre);
+                socket = new Socket("localhost", 12345);
+                out = new PrintWriter(socket.getOutputStream(), true);
+                out.println(nombre);
 
-            new Thread(this::escuchar).start();
-            area.append("[SISTEMA] Conectado.\n");
-        } catch (Exception e) {
-            area.append("[!] Reintento " + intento + "/3...\n");
-            new Thread(() -> { try { Thread.sleep(2000); conectar(intento + 1); } catch (Exception ex) {} }).start();
-        }
-    }
+                // Conexión TCP exitosa: resetear contadores
+                intentosReconexion = 0;
+                reconectandose = false;
+                SwingUtilities.invokeLater(() -> {
+                    area.append("[SISTEMA] Conectado exitosamente.\n");
+                    btnCon.setEnabled(false);
+                });
 
-    private void escuchar() {
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-            String s;
-            while ((s = in.readLine()) != null) {
-                if (s.startsWith("LISTA:")) actualizarLista(s.substring(6));
-                else area.append(s + "\n");
+                escuchar(new BufferedReader(new InputStreamReader(socket.getInputStream())));
+
+            } catch (Exception e) {
+                manejarFallo("[!] No se pudo conectar al servidor");
             }
-        } catch (Exception e) {
-            area.append("[!] Conexión perdida. Saltando de nodo...\n");
+        }).start();
+    }
+
+    // ── Bucle de lectura ──────────────────────────────────────────────────────
+
+    private void escuchar(BufferedReader in) {
+        try {
+            String linea;
+            while ((linea = in.readLine()) != null) {
+                final String l = linea;
+
+                if (l.contains("No hay servidores disponibles")) {
+                    SwingUtilities.invokeLater(() -> area.append("[!] " + l + "\n"));
+                    continue; // LB cerrará el socket: readLine() devolverá null
+                }
+
+                if (l.startsWith("LISTA:")) {
+                    actualizarLista(l.substring(6));
+                } else {
+                    SwingUtilities.invokeLater(() -> area.append(l + "\n"));
+                }
+            }
+            SwingUtilities.invokeLater(() -> area.append("[!] Conexión cerrada por el servidor.\n"));
+
+        } catch (IOException e) {
+            SwingUtilities.invokeLater(() -> area.append("[!] Conexión interrumpida.\n"));
         } finally {
-            conectar(1); // Al salir del while por error, intenta reconectar al LB
+            manejarFallo(null);
         }
     }
+
+    // ── Gestión centralizada de fallos y reconexión automática ────────────────
+
+    private void manejarFallo(String mensaje) {
+        if (mensaje != null) {
+            SwingUtilities.invokeLater(() -> area.append(mensaje + "\n"));
+        }
+
+        synchronized (this) {
+            if (reconectandose) return;
+            reconectandose = true;
+        }
+
+        intentosReconexion++;
+
+        if (intentosReconexion > MAX_RECONEXIONES) {
+            // ── 3 intentos agotados: pasar a modo manual ──────────────────
+            reconectandose = false;
+            SwingUtilities.invokeLater(() -> {
+                area.append("[SISTEMA] Sin conexión tras " + MAX_RECONEXIONES + " intentos automáticos.\n");
+                area.append("[SISTEMA] Pulse 'Conectar' para reintentar manualmente.\n");
+                btnCon.setEnabled(true); // habilitar botón manual
+            });
+            return;
+        }
+
+        // ── Aún quedan intentos: esperar 3s y reconectar ──────────────────
+        final int intento = intentosReconexion;
+        SwingUtilities.invokeLater(() ->
+                area.append("[SISTEMA] Reconectando automáticamente... ("
+                        + intento + "/" + MAX_RECONEXIONES + ") en 3s\n"));
+
+        new Thread(() -> {
+            try { Thread.sleep(3000); } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            reconectandose = false;
+            conectar();
+        }).start();
+    }
+
+    // ── Envío de mensajes ─────────────────────────────────────────────────────
 
     private void enviar() {
-        String m = campo.getText();
+        String m = campo.getText().trim();
         if (m.isEmpty() || out == null) return;
 
         try {
             String dest = listaUI.getSelectedValue();
             if (dest != null) {
                 out.println("@" + dest + " " + m);
-                area.append("[Privado para " + dest + "]: " + m + "\n");
+                SwingUtilities.invokeLater(() ->
+                        area.append("[Privado para " + dest + "]: " + m + "\n"));
             } else {
                 out.println(m);
             }
-            // Si el socket estuviera muerto, checkError() puede ayudar a detectarlo
-            if (out.checkError()) throw new IOException("Error de escritura");
-            campo.setText("");
+
+            if (out.checkError()) throw new IOException("Error de escritura en el socket");
+            SwingUtilities.invokeLater(() -> campo.setText(""));
+
         } catch (Exception e) {
-            area.append("[SISTEMA] Error al enviar. Reconectando...\n");
-            conectar(1);
+            SwingUtilities.invokeLater(() ->
+                    area.append("[SISTEMA] Error al enviar. Intentando recuperar conexión...\n"));
+            manejarFallo(null);
         }
     }
+
+    // ── Lista de usuarios ─────────────────────────────────────────────────────
 
     private void actualizarLista(String d) {
         SwingUtilities.invokeLater(() -> {
             modelo.clear();
-            for (String u : d.split(",")) if (!u.equals(nombre)) modelo.addElement(u);
+            if (d == null || d.isBlank()) return;
+            for (String u : d.split(",")) {
+                if (!u.isBlank() && !u.equals(nombre)) modelo.addElement(u);
+            }
         });
     }
 
-    public static void main(String[] args) { new PrincipalCli().setVisible(true); }
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new PrincipalCli().setVisible(true));
+    }
 }
