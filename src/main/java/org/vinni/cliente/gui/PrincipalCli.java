@@ -5,141 +5,94 @@ import java.awt.*;
 import java.io.*;
 import java.net.*;
 
-public class PrincipalCli extends javax.swing.JFrame {
-    private final int PORT = 12345;
+public class PrincipalCli extends JFrame {
     private Socket socket;
     private PrintWriter out;
-    private String nombreUsuario;
-    private DefaultListModel<String> modeloLista = new DefaultListModel<>();
+    private DefaultListModel<String> modelo = new DefaultListModel<>();
+    private JList<String> listaUI = new JList<>(modelo);
+    private JTextArea area = new JTextArea();
+    private JTextField campo = new JTextField();
+    private JButton btnCon = new JButton("Conectar");
+    private String nombre;
 
     public PrincipalCli() {
-        initComponents();
-        getContentPane().setBackground(new Color(245, 245, 245));
+        setTitle("Cliente Resiliente");
+        btnCon.addActionListener(e -> conectar(1));
+        campo.addActionListener(e -> enviar());
+        setLayout(new BorderLayout());
+        add(btnCon, BorderLayout.NORTH);
+        add(new JScrollPane(listaUI), BorderLayout.WEST);
+        add(new JScrollPane(area), BorderLayout.CENTER);
+        add(campo, BorderLayout.SOUTH);
+        setSize(500, 400);
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
     }
 
-    private void initComponents() {
-        this.setTitle("Chat Cliente");
-        bConectar = new JButton("Conectar");
-        bLimpiar = new JButton("Limpiar");
-        btEnviar = new JButton("Enviar");
-        mensajeTxt = new JTextField();
-        mensajesTxt = new JTextArea();
-        listaUsuariosUI = new JList<>(modeloLista);
+    private void conectar(int intento) {
+        if (nombre == null) nombre = JOptionPane.showInputDialog("Nombre:");
+        if (nombre == null || intento > 3) {
+            btnCon.setEnabled(true);
+            return;
+        }
 
-        JScrollPane scMsg = new JScrollPane(mensajesTxt);
-        JScrollPane scLis = new JScrollPane(listaUsuariosUI);
+        try {
+            btnCon.setEnabled(false);
+            if (socket != null) socket.close();
 
-        setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
-        getContentPane().setLayout(null);
+            socket = new Socket("localhost", 12345);
+            // IMPORTANTE: Definir timeout o autoFlush
+            out = new PrintWriter(socket.getOutputStream(), true);
+            out.println(nombre);
 
-        bConectar.setBounds(20, 15, 100, 30);
-        bConectar.addActionListener(e -> conectarConReintentos());
-        getContentPane().add(bConectar);
-
-        bLimpiar.setBounds(130, 15, 100, 30);
-        bLimpiar.addActionListener(e -> mensajesTxt.setText(""));
-        getContentPane().add(bLimpiar);
-
-        scMsg.setBounds(20, 55, 300, 150);
-        mensajesTxt.setEditable(false);
-        getContentPane().add(scMsg);
-
-        scLis.setBounds(330, 55, 110, 150);
-        getContentPane().add(scLis);
-
-        mensajeTxt.setBounds(20, 215, 210, 30);
-        getContentPane().add(mensajeTxt);
-
-        btEnviar.setBounds(240, 215, 80, 30);
-        btEnviar.addActionListener(e -> enviarMensaje());
-        getContentPane().add(btEnviar);
-
-        modeloLista.addElement("Todos");
-        setSize(470, 300);
-        setLocationRelativeTo(null);
-    }
-
-    private void conectarConReintentos() {
-        if (nombreUsuario == null) nombreUsuario = JOptionPane.showInputDialog("Nombre:");
-
-        new Thread(() -> {
-            int intentos = 0;
-            while (intentos < 3) {
-                try {
-                    log("[INFO] Conectando...");
-                    socket = new Socket("localhost", PORT);
-                    out = new PrintWriter(socket.getOutputStream(), true);
-                    out.println(nombreUsuario);
-                    bConectar.setEnabled(false);
-                    escuchar();
-                    return;
-                } catch (IOException e) {
-                    intentos++;
-                    log("[FALLO] Reintento " + intentos + " en 2s...");
-                    try { Thread.sleep(2000); } catch (Exception ex) {}
-                }
-            }
-            log("[ERROR] Servidor no responde.");
-        }).start();
+            new Thread(this::escuchar).start();
+            area.append("[SISTEMA] Conectado.\n");
+        } catch (Exception e) {
+            area.append("[!] Reintento " + intento + "/3...\n");
+            new Thread(() -> { try { Thread.sleep(2000); conectar(intento + 1); } catch (Exception ex) {} }).start();
+        }
     }
 
     private void escuchar() {
-        new Thread(() -> {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-                String s;
-                while ((s = in.readLine()) != null) {
-                    if (s.startsWith("LISTA:")) actualizarLista(s.substring(6));
-                    else mensajesTxt.append(s + "\n");
-                }
-            } catch (IOException e) {
-                log("[SISTEMA] Conexión cerrada.");
-            } finally {
-                limpiarInterfaz();
-                conectarConReintentos(); // Política de reconexión tras caída
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+            String s;
+            while ((s = in.readLine()) != null) {
+                if (s.startsWith("LISTA:")) actualizarLista(s.substring(6));
+                else area.append(s + "\n");
             }
-        }).start();
-    }
-
-    private void limpiarInterfaz() {
-        out = null;
-        bConectar.setEnabled(true);
-        SwingUtilities.invokeLater(() -> {
-            modeloLista.clear();
-            modeloLista.addElement("Todos");
-        });
-    }
-
-    private void log(String m) {
-        SwingUtilities.invokeLater(() -> mensajesTxt.append(m + "\n"));
-    }
-
-    private void enviarMensaje() {
-        if (out == null) return;
-        String dest = listaUsuariosUI.getSelectedValue();
-        String m = mensajeTxt.getText();
-        if (m.isEmpty()) return;
-
-        if (dest == null || dest.equals("Todos")) out.println(m);
-        else {
-            out.println("@" + dest + " " + m);
-            mensajesTxt.append("[Privado para " + dest + "]: " + m + "\n");
+        } catch (Exception e) {
+            area.append("[!] Conexión perdida. Saltando de nodo...\n");
+        } finally {
+            conectar(1); // Al salir del while por error, intenta reconectar al LB
         }
-        mensajeTxt.setText("");
     }
 
-    private void actualizarLista(String datos) {
+    private void enviar() {
+        String m = campo.getText();
+        if (m.isEmpty() || out == null) return;
+
+        try {
+            String dest = listaUI.getSelectedValue();
+            if (dest != null) {
+                out.println("@" + dest + " " + m);
+                area.append("[Privado para " + dest + "]: " + m + "\n");
+            } else {
+                out.println(m);
+            }
+            // Si el socket estuviera muerto, checkError() puede ayudar a detectarlo
+            if (out.checkError()) throw new IOException("Error de escritura");
+            campo.setText("");
+        } catch (Exception e) {
+            area.append("[SISTEMA] Error al enviar. Reconectando...\n");
+            conectar(1);
+        }
+    }
+
+    private void actualizarLista(String d) {
         SwingUtilities.invokeLater(() -> {
-            modeloLista.clear();
-            modeloLista.addElement("Todos");
-            for (String u : datos.split(",")) if(!u.equals(nombreUsuario)) modeloLista.addElement(u);
+            modelo.clear();
+            for (String u : d.split(",")) if (!u.equals(nombre)) modelo.addElement(u);
         });
     }
 
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new PrincipalCli().setVisible(true));
-    }
-    private JButton bConectar, bLimpiar, btEnviar;
-    private JTextField mensajeTxt;
-    private JTextArea mensajesTxt;
-    private JList<String> listaUsuariosUI;
+    public static void main(String[] args) { new PrincipalCli().setVisible(true); }
 }
